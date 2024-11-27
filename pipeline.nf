@@ -1,6 +1,6 @@
 nextflow.enable.dsl = 2
 
-
+import nextflow.Channel
 
 // Processes
 process download_reads {
@@ -41,14 +41,14 @@ process fastqc_raw {
 process trim_reads {
     tag { sample_id }
 	container "https://depot.galaxyproject.org/singularity/fastp%3A0.23.4--hadf994f_3"
-    publishDir "${params.outdir}/fastp", mode: 'copy'
+    publishDir "data/trimmed_input", mode: 'copy'
 
     input:
     tuple val(sample_id), path(r1), path(r2)
 
     output:
     tuple val(sample_id), path("trimmed_${sample_id}_R1.fastq.gz"), path("trimmed_${sample_id}_R2.fastq.gz"), emit: trimmed_reads
-	
+	tuple val(sample_id), path("${sample_id}_fastp.html"), path("${sample_id}_fastp.json"), emit: fastp_reports
 
     
 
@@ -67,7 +67,7 @@ process trim_reads {
 
 process create_fasta_index {
 	container "https://depot.galaxyproject.org/singularity/samtools%3A1.18--h50ea8bc_1"
-    publishDir "${params.outdir}/genome/index", mode: "copy"
+    publishDir "data/", mode: "copy"
 	
     input:
     path genome_fasta
@@ -85,7 +85,7 @@ process create_fasta_index {
 
 process create_genome_dict {
 	container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
-    publishDir "${params.outdir}/genome/dict", mode: "copy"
+    publishDir "data/", mode: "copy"
     input:
     path genome_fasta
 
@@ -101,14 +101,15 @@ process create_genome_dict {
 //Process: STAR Genome Index
 
 process create_star_index {
-	container "https://depot.galaxyproject.org/singularity/star%3A2.7.10b--h6b7c446_1"
-    publishDir "${params.outdir}/genome/starindex", mode: "copy"
+    container "https://depot.galaxyproject.org/singularity/star%3A2.7.10b--h6b7c446_1"
+    publishDir "data/", mode: "copy"
+
     input:
     path genome_fasta
     path genome_gtf
 
     output:
-    path "STAR_index"
+    path "STAR_index", type: 'dir'
 
     script:
     """
@@ -121,70 +122,35 @@ process create_star_index {
     """
 }
 
-process star_mapping {
-    tag { sample_id }
-	container "https://depot.galaxyproject.org/singularity/star%3A2.7.11a--h0033a41_0"
-    publishDir "${params.outdir}/star", mode: "copy"
-
-    input:
-    tuple val(sample_id), path(r1), path(r2)
-    path star_index
-
-    output:
-    tuple val(sample_id), path("${sample_id}.Aligned.sortedByCoord.out.bam")
-
-    script:
-    """
-    STAR --runThreadN 8 \
-         --genomeDir ${star_index} \
-         --readFilesIn ${r1} ${r2} \
-         --readFilesCommand zcat \
-         --outSAMtype BAM SortedByCoordinate \
-         --outFileNamePrefix ${sample_id}.
-    """
-}
 
 
+
+
+
+nextflow.enable.dsl = 2
 
 workflow {
-    // Step 1: Load and parse the CSV file into a channel
+    // Step 1: Load and parse sample metadata
     samples_channel = Channel.fromPath(params.csv_file)
         .splitCsv(header: true)
         .map { row -> tuple(row.sample_id, row.read1, row.read2) }
-    samples_channel.view() // Debug: View the parsed samples
 
-    // Step 2: Download reads
+    // Step 2: Download raw reads
     reads_channel = download_reads(samples_channel)
-    reads_channel.view() // Debug: View the downloaded reads
 
-    // Step 3: Perform trimming with Fastp
-	fastp_results = trim_reads(reads_channel)
+    // Step 3: Perform FastQC on raw reads
+    fastqc_raw_results = fastqc_raw(reads_channel)
 
-	// Reshape the output for downstream processes
-	trimmed_reads = fastp_results.map { sample_id, r1, r2 ->
-    tuple(sample_id, r1, r2) // Separate r1 and r2 for STAR mapping
-	}
-	trimmed_reads.view() // Debug: Verify reshaped output
+    // Step 4: Trim reads with fastp
+    trimmed_reads = trim_reads(reads_channel)
 
+    // Step 6: Load genome files
+    genome_fasta = Channel.value(file(params.genome_fasta))
+    genome_gtf = Channel.value(file(params.genome_gtf))
 
-    // Step 5: Input genome files
-    genome_channel = Channel.fromPath(params.genome_fasta)
-    gtf_channel = Channel.fromPath(params.genome_gtf)
-    genome_channel.view() // Debug: View the genome FASTA
-    gtf_channel.view() // Debug: View the GTF file
+    // Step 8: Create genome index files
+    fasta_index = create_fasta_index(Channel.value(file(params.genome_fasta)))
+    genome_dict = create_genome_dict(Channel.value(file(params.genome_fasta)))
+    star_index = create_star_index(Channel.value(file(params.genome_fasta)), Channel.value(file(params.genome_gtf)))
 
-    // Step 6: Create FASTA index
-    fasta_index = create_fasta_index(genome_channel)
-
-    // Step 7: Create genome dictionary
-    genome_dict = create_genome_dict(genome_channel)
-
-    // Step 8: Generate STAR genome index
-    star_index = create_star_index(genome_channel, gtf_channel)
-    star_index.view() // Debug: View the STAR index directory
-
-    // Step 9: Perform STAR mapping
-    aligned_reads = star_mapping(trimmed_reads, star_index)
-    aligned_reads.view() // Debug: View the STAR mapping outputs
 }
-
