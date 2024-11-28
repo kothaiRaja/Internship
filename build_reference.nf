@@ -116,7 +116,13 @@ process DOWNLOAD_SNPEFF_DB {
     data_dir=\$(realpath ${params.snpeff_db_dir})
 
     # Download the database
-    java -Xmx4g -Xms2g -jar ${snpeff_jar_path} download ${genome} -dataDir \$data_dir -v
+    # Check if the database is already downloaded
+    if [ ! -d "\$data_dir/${genome}" ]; then
+        echo "Downloading SnpEff database for ${genome}..."
+        java -Xmx4g -Xms2g -jar ${snpeff_jar_path} download ${genome} -dataDir \$data_dir -v
+    else
+        echo "SnpEff database for ${genome} already exists. Skipping download."
+    fi
     """
 }
 
@@ -161,7 +167,7 @@ process trim_reads {
     tag { sample_id }
 	container "https://depot.galaxyproject.org/singularity/fastp%3A0.23.4--hadf994f_3"
     publishDir "${params.outdir}/fastp", mode: "copy"
-	storeDir "${params.test_data_dir}"
+	storeDir "${params.test_data_dir}/fastp"
     input:
     tuple val(sample_id), path(r1), path(r2)
 

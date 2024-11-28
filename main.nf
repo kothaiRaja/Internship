@@ -1,26 +1,55 @@
 nextflow.enable.dsl=2
 
-params.input_dir = "./trimmed_input"  // Directory containing trimmed reads
-params.output_dir = "./test_output"  // Output directory for test files
 
-workflow {
-    Channel
-        .fromFilePairs("${params.input_dir}/*_R{1,2}.fastq.gz", flat: true)
-        .set { sample_pairs }
 
-    sample_pairs | testProcess
-}
+process STAR_ALIGNMENT {
+    tag { sample_id }
 
-process testProcess {
+   container "https://depot.galaxyproject.org/singularity/star%3A2.7.11a--h0033a41_0"
+    publishDir "${params.outdir}/STAR", mode: "copy"
+
     input:
-    tuple val(sample_id), path(reads)
+    tuple val(sample_id), path(trimmed_r1), path(trimmed_r2)
+    path star_index_dir
+    
 
     output:
-    path("${params.output_dir}/")
+    path "${sample_id}_Aligned.sortedByCoord.out.bam"
 
     script:
     """
-    mkdir -p ${params.output_dir}
-    echo "Processing sample ${sample_id}" > ${params.output_dir}/${sample_id}.txt
+    # ngs-nf-dev Align reads to genome
+  STAR --genomeDir $star_index_dir \
+       --readFilesIn ${trimmed_r1} ${trimmed_r2}  \
+       --runThreadN $task.cpus \
+       --readFilesCommand zcat \
+       --outFilterType BySJout \
+       --alignSJoverhangMin 8 \
+       --alignSJDBoverhangMin 1 \
+       --outFilterMismatchNmax 999
+
+  # Run 2-pass mapping (improve alignmets using table of splice junctions and create a new index)  
+  STAR --genomeDir $star_index_dir \
+       --readFilesIn ${trimmed_r1} ${trimmed_r2} \
+       --runThreadN $task.cpus \
+       --readFilesCommand zcat \
+       --outFilterType BySJout \
+       --alignSJoverhangMin 8 \
+       --alignSJDBoverhangMin 1 \
+       --outFilterMismatchNmax 999 \
+       --sjdbFileChrStartEnd SJ.out.tab \
+	   --outFileNamePrefix ${sample_id}_ \
+       --outSAMtype BAM SortedByCoordinate \
+       --outSAMattrRGline ID:$sample_id LB:library PL:illumina PU:machine SM:GM12878
     """
+}
+
+workflow {
+    
+
+    // Load trimmed reads
+    trimmed_reads_ch = Channel.fromFilePairs(params.reads, flat: true)
+        
+    // Run STAR Alignment
+    aligned_bams = STAR_ALIGNMENT(trimmed_reads_ch, params.star_index_dir)
 }
