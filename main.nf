@@ -216,20 +216,113 @@ process GATK_HAPLOTYPE_CALLER {
 	path (interval_list)
 
     output:
-    tuple val(sample_id), path("${sample_id}.g.vcf.gz"), path("${sample_id}.g.vcf.gz.tbi")
+    tuple val(sample_id), path("output_${sample_id}.vcf.gz"), path("output_${sample_id}.vcf.gz.tbi") 
 
     script:
     """
     gatk HaplotypeCaller \
-        -R ${genome} \
-        -I ${bam} \
-        -O ${sample_id}.g.vcf.gz \
-        -L ${interval_list} \
-        -ERC GVCF
+        --native-pair-hmm-threads ${task.cpus} \
+        --reference ${genome} \
+        --output output_${sample_id}.vcf.gz\
+        -I $bam \
+        --standard-min-confidence-threshold-for-calling 20.0 \
+        --dont-use-soft-clipped-bases \
+		--intervals $interval_list
     """
 }
 
+process GATK_MERGE_VCFS {
+    tag "Combine GVCFs"
+    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+    publishDir "${params.outdir}/combined_gvcf", mode: 'copy'
 
+    input:
+    path genome
+	path genome_index
+	path genome_dict
+    tuple val(sample_id), path (vcfs), path(vcf_index)  // List of GVCFs
+
+    output:
+    path "merged_output.vcf.gz", emit: vcf          // Merged VCF file
+    path "merged_output.vcf.gz.tbi", emit: vcf_idx  // Index for the merged VCF file
+
+    script:
+    """
+    gatk MergeVcfs \
+        ${vcfs.collect { "-I $it" }.join(' ')} \
+        --OUTPUT merged_output.vcf.gz
+    """
+}
+
+process GATK_VARIANT_FILTER {
+    tag "variant_filter"
+
+    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+    publishDir "${params.outdir}/variant_filter", mode: "copy"
+
+    input:
+    path(vcf_file)
+	path(vcf_index)  // Input VCF and index
+    path genome 	// Reference genome
+	path genome_index
+	path genome_dict
+
+    output:
+          path("final.vcf.gz") 
+          path("final.vcf.gz.tbi")  // Filtered VCF and index
+
+    script:
+    """
+    gatk VariantFiltration \
+    -R ${genome} \
+    -V ${vcf_file} \
+    --cluster-window-size 35 --cluster-size 3 \
+    --filter-name "LowQual" --filter-expression "QUAL < 30.0" \
+    --filter-name "LowQD" --filter-expression "QD < 2.0" \
+    --filter-name "HighFS" --filter-expression "FS > 60.0" \
+    -O final.vcf.gz
+
+    """
+}
+process ANNOTATE_VARIANTS {
+    tag "$sampleId"
+    label "mem_large"
+    container "https://depot.galaxyproject.org/singularity/snpeff%3A5.2--hdfd78af_1"
+    publishDir "${params.outdir}/annotations", mode: 'copy'
+
+    input:
+        tuple val(sampleId), path(vcf)
+        path("/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.jar")
+        path("/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.config")
+        path("/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff/data")
+
+    output:
+        tuple val(sampleId), path("${sampleId}.annotated.vcf"), path("${sampleId}.summary.html")
+
+    script:
+    """
+    # Define absolute paths for SnpEff files
+    SNPEFF_JAR="/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.jar"
+    SNPEFF_CONFIG="/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.config"
+    SNPEFF_DB_DIR="/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff/data"
+    GENOME="${params.genomedb}"
+
+    # Annotate variants using SnpEff
+    java -Xmx16G -jar \$SNPEFF_JAR \\
+        -c \$SNPEFF_CONFIG \\
+        -v \$GENOME \\
+        -dataDir \$SNPEFF_DB_DIR \\
+        ${vcf} > ${sampleId}.annotated.vcf
+
+    # Generate a summary HTML file
+    java -Xmx16G -jar \$SNPEFF_JAR \\
+        -c \$SNPEFF_CONFIG \\
+        -v \$GENOME \\
+        -dataDir \$SNPEFF_DB_DIR \\
+        -stats ${sampleId}.summary.html \\
+        ${vcf} > /dev/null
+    """
+}
 
 
 
@@ -261,8 +354,25 @@ workflow {
 	// Scatter the Interval List
     scattered_intervals_ch = SCATTER_INTERVAL_LIST(interval_list_ch, params.genome_dict)
 	
-    //GATK HaplotypeCaller
+	//GATK HaplotypeCaller
 	gvcf_output = GATK_HAPLOTYPE_CALLER(recalibrated_bams, params.genome,params.fasta_index,params.genome_dict,  scattered_intervals_ch)
+	
+
+	// Combine GVCFs
+	merged_vcf = GATK_MERGE_VCFS(params.genome,params.fasta_index, params.genome_dict,gvcf_output)
+
+	//// Variant Filtering
+    filtered_vcf = GATK_VARIANT_FILTER(merged_vcf,params.genome,params.fasta_index, params.genome_dict )
+	
+	// Pass all required inputs to ANNOTATE_VARIANTS
+    annotated_vcf = ANNOTATE_VARIANTS(
+        filtered_vcf,
+        SNPEFF_JAR,
+        SNPEFF_CONFIG,
+        SNPEFF_DB_DIR
+    )
+
+
 
 
 }
