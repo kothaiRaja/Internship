@@ -64,6 +64,25 @@ process SAMTOOLS_SORT_INDEX {
     """
 }
 
+process SAMTOOLS_FLAGSTAT {
+    tag { sample_id }
+
+    container "https://depot.galaxyproject.org/singularity/samtools%3A1.18--h50ea8bc_1"
+    publishDir "${params.outdir}/flagstat", mode: "copy"
+
+    input:
+    tuple val(sample_id), path(sorted_bam), path(bai)
+
+    output:
+    tuple val(sample_id), path("${sample_id}_flagstat.txt")
+
+    script:
+    """
+    samtools flagstat ${sorted_bam} > ${sample_id}_flagstat.txt
+    """
+}
+
+
 process GATK_MARK_DUPLICATES {
     tag { sample_id }
 
@@ -221,13 +240,17 @@ process GATK_HAPLOTYPE_CALLER {
     script:
     """
     gatk HaplotypeCaller \
-        --native-pair-hmm-threads ${task.cpus} \
-        --reference ${genome} \
-        --output output_${sample_id}.vcf.gz\
-        -I $bam \
-        --standard-min-confidence-threshold-for-calling 20.0 \
-        --dont-use-soft-clipped-bases \
-		--intervals $interval_list
+    --native-pair-hmm-threads ${task.cpus} \
+    --reference ${genome} \
+    --output output_${sample_id}.vcf.gz \
+    -I $bam \
+    --standard-min-confidence-threshold-for-calling 5.0 \
+    --dont-use-soft-clipped-bases true \
+    --min-base-quality-score 10 \
+	--emit-ref-confidence GVCF \
+	--output-mode EMIT_VARIANTS_ONLY \
+    --intervals $interval_list
+
     """
 }
 
@@ -285,44 +308,40 @@ process GATK_VARIANT_FILTER {
     """
 }
 process ANNOTATE_VARIANTS {
-    tag "$sampleId"
-    label "mem_large"
+    tag "Annotate variants"
+    
     container "https://depot.galaxyproject.org/singularity/snpeff%3A5.2--hdfd78af_1"
     publishDir "${params.outdir}/annotations", mode: 'copy'
 
     input:
-        tuple val(sampleId), path(vcf)
-        path("/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.jar")
-        path("/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.config")
-        path("/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff/data")
+    path vcf	// Filtered VCF file
+	path index
+    path snpEffJar  // Path to the SnpEff JAR file
+    path snpEffConfig  // Path to the SnpEff configuration file
+    path snpEffDbDir	// Path to the SnpEff database directory
+	val genomedb
 
     output:
-        tuple val(sampleId), path("${sampleId}.annotated.vcf"), path("${sampleId}.summary.html")
+    path "annotated.vcf"
+	path "annotated.summary.html"
 
     script:
     """
-    # Define absolute paths for SnpEff files
-    SNPEFF_JAR="/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.jar"
-    SNPEFF_CONFIG="/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff.config"
-    SNPEFF_DB_DIR="/home/kothai/cq-git-sample/Variantcalling-and-Genefusion/data/test/snpEff/snpEff/data"
-    GENOME="${params.genomedb}"
+    java -Xmx16G -jar ${snpEffJar} \
+        -c ${snpEffConfig} \
+        -v ${params.genomedb} \
+        -dataDir ${snpEffDbDir} \
+        ${vcf} > annotated.vcf
 
-    # Annotate variants using SnpEff
-    java -Xmx16G -jar \$SNPEFF_JAR \\
-        -c \$SNPEFF_CONFIG \\
-        -v \$GENOME \\
-        -dataDir \$SNPEFF_DB_DIR \\
-        ${vcf} > ${sampleId}.annotated.vcf
-
-    # Generate a summary HTML file
-    java -Xmx16G -jar \$SNPEFF_JAR \\
-        -c \$SNPEFF_CONFIG \\
-        -v \$GENOME \\
-        -dataDir \$SNPEFF_DB_DIR \\
-        -stats ${sampleId}.summary.html \\
+    java -Xmx16G -jar ${snpEffJar} \
+        -c ${snpEffConfig} \
+        -v ${params.genomedb} \
+        -dataDir ${snpEffDbDir} \
+        -stats annotated.summary.html \
         ${vcf} > /dev/null
     """
 }
+
 
 
 
@@ -337,6 +356,9 @@ workflow {
 	
 	// Sort and index BAM files
     sorted_bams = SAMTOOLS_SORT_INDEX(aligned_bams)
+	
+	// Generate alignment statistics
+    alignment_stats = SAMTOOLS_FLAGSTAT(sorted_bams)
 	
 	// Mark duplicates
     marked_bams = GATK_MARK_DUPLICATES(sorted_bams)
@@ -365,14 +387,8 @@ workflow {
     filtered_vcf = GATK_VARIANT_FILTER(merged_vcf,params.genome,params.fasta_index, params.genome_dict )
 	
 	// Pass all required inputs to ANNOTATE_VARIANTS
-    annotated_vcf = ANNOTATE_VARIANTS(
-        filtered_vcf,
-        SNPEFF_JAR,
-        SNPEFF_CONFIG,
-        SNPEFF_DB_DIR
-    )
-
-
-
+    annotated_vcf = ANNOTATE_VARIANTS(filtered_vcf, file('./data/test/snpEff/snpEff.jar'),
+        file('./data/test/snpEff/snpEff.config'),
+        file('./data/test/snpEff/data') , params.genomedb)   
 
 }

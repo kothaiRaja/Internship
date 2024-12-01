@@ -126,6 +126,9 @@ process DOWNLOAD_SNPEFF_DB {
     """
 }
 
+
+
+
 // Processes
 process download_reads {
 	publishDir "${params.test_data_dir}", mode: "copy"
@@ -288,16 +291,16 @@ workflow {
     // Step 4: Load and parse sample metadata
     samples_channel = Channel.fromPath(params.csv_file)
         .splitCsv(header: true)
-        .map { row -> tuple(row.sample_id, row.read1, row.read2) }
-
+        .map { row ->  tuple(row.sample_id, row.forward_read_path, row.reverse_read_path) }
+		
     // Step 5: Download raw reads
-    reads_channel = download_reads(samples_channel)
+    //reads_channel = download_reads(samples_channel)
 
     // Step 6: Perform FastQC on raw reads (depends on downloaded reads)
-    fastqc_raw_results = fastqc_raw(reads_channel)
+    fastqc_raw_results = fastqc_raw(samples_channel)
 
     // Step 7: Trim reads with fastp (depends on FastQC)
-    trimmed_reads = trim_reads(reads_channel)
+    trimmed_reads = trim_reads(samples_channel)
 
     // Step 8: Create genome index files
     // Fasta index depends on genome download
@@ -307,6 +310,6 @@ workflow {
     // STAR index depends on genome and GTF downloads
     star_index = create_star_index(genome, genome_gtf)
 	// Prepare VCF file
-    prepared_vcf_ch = PREPARE_VCF_FILE(params.variants, params.denylist)
+    prepared_vcf_ch = PREPARE_VCF_FILE(variants, denylist)
 }
 
