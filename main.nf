@@ -413,6 +413,24 @@ process ANNOTATE_VARIANTS {
     """
 }
 
+process MULTIQC_REPORT {
+    tag "Generate MultiQC report"
+
+    container "https://depot.galaxyproject.org/singularity/multiqc%3A1.20--pyhdfd78af_0" 
+    publishDir "${params.outdir}/multiqc", mode: 'copy'
+
+    input:
+    path results_dir 
+
+    output:
+    path "multiqc_report.html"
+    path "multiqc_data"
+
+    script:
+    """
+    multiqc ${results_dir} -o .
+    """
+}
 
 
 
@@ -467,5 +485,8 @@ workflow {
     annotated_vcf = ANNOTATE_VARIANTS(filtered_vcf, file('./data/test/snpEff/snpEff.jar'),
         file('./data/test/snpEff/snpEff.config'),
         file('./data/test/snpEff/snpEff/data') , params.genomedb)   
+		
+	//multiqc
+	multiqc_results = MULTIQC_REPORT(Channel.fromPath("${params.outdir}"))
 
 }
