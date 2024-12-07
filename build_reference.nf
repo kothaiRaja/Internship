@@ -4,44 +4,75 @@ nextflow.enable.dsl = 2
 process DOWNLOAD_TEST_GENOME {
     tag "Download test genome"
 	container null
-    publishDir "${params.test_data_dir}", mode: 'copy'
+    publishDir "${params.test_data_dir}/reference", mode: 'copy'
 
     output:
     path "genome.fa"
 
     script:
     """
-    wget -q -O genome.fa ${params.test_data_url}/genome.fa
+    wget -q -O genome.fa ${params.test_data_genome}
+	
+	 # Download the genome file
+    wget -q -O genome.fa.gz ${params.test_data_genome}
+
+    # Rename or delete any existing genome.fa to avoid overwriting
+    if [ -e genome.fa ]; then
+        rm genome.fa
+    fi
+
+    # Check if the file is gzip-compressed and decompress it
+    if file genome.fa.gz | grep -q 'gzip'; then
+        gunzip genome.fa.gz
+    fi
     """
 }
 
 // Process to download the test variants VCF
-process DOWNLOAD_TEST_VARIANTS {
+process DOWNLOAD_TEST_VARIANTS_SNP {
     tag "Download test variants VCF"
 	container null
-    publishDir "${params.test_data_dir}", mode: 'copy'
+    publishDir "${params.test_data_dir}/reference", mode: 'copy'
 
     output:
-    path "variants.vcf"
+    path "variants_snp.vcf"
 
     script:
     """
-    wget -q -O variants.vcf ${params.test_data_url}/subset_chr22.vcf.gz
+    wget -q -O variants_snp.vcf ${params.test_data_dbsnp}
     """
 }
+
+// Process to download the test variants VCF
+process DOWNLOAD_TEST_VARIANTS_INDELS {
+    tag "Download test variants VCF"
+	container null
+    publishDir "${params.test_data_dir}/reference", mode: 'copy'
+
+    output:
+    path "variants_indels.vcf"
+
+    script:
+    """
+    wget -q -O variants_indels.vcf ${params.test_data_known_indels }
+    """
+}
+
 
 // Process to download the test denylist BED
 process DOWNLOAD_TEST_DENYLIST {
     tag "Download test denylist BED"
 	container null	
-    publishDir "${params.test_data_dir}", mode: 'copy'
+    publishDir "${params.test_data_dir}/reference", mode: 'copy'
 
     output:
     path "denylist.bed"
 
     script:
     """
-    wget -q -O denylist.bed ${params.test_data_url}/denylist_chr22_to_22.bed
+    wget -q -O denylist.bed ${params.test_data_denylist}
+	
+	
     """
 }
 
@@ -49,14 +80,14 @@ process DOWNLOAD_TEST_DENYLIST {
 process DOWNLOAD_TEST_GTF {
     tag "Download test GTF"
 	container null
-    publishDir "${params.test_data_dir}", mode: 'copy'
+    publishDir "${params.test_data_dir}/reference", mode: 'copy'
 
     output:
     path "annotations.gtf"
 
     script:
     """
-    wget -q -O annotations.gtf ${params.test_data_url}/annotations.gtf
+    wget -q -O annotations.gtf ${params.test_data_gtf}
     """
 }
 
@@ -168,26 +199,34 @@ process fastqc_raw {
 
 process trim_reads {
     tag { sample_id }
-	container "https://depot.galaxyproject.org/singularity/fastp%3A0.23.4--hadf994f_3"
+    container "https://depot.galaxyproject.org/singularity/fastp%3A0.23.4--h125f33a_5"
     publishDir "${params.outdir}/fastp", mode: "copy"
-	storeDir "${params.test_data_dir}/fastp"
+    storeDir "${params.test_data_dir}/fastp"
+
     input:
     tuple val(sample_id), path(r1), path(r2)
 
+    
     output:
-    tuple val(sample_id), path("trimmed_${sample_id}_R1.fastq.gz"), path("trimmed_${sample_id}_R2.fastq.gz"), emit: trimmed_reads
+	tuple val(sample_id), path("trimmed_${sample_id}_R1.fastq.gz"), path("trimmed_${sample_id}_R2.fastq.gz"), emit: trimmed_reads
 	tuple val(sample_id), path("${sample_id}_fastp.html"), path("${sample_id}_fastp.json"), emit: fastp_reports
 
-    
 
     script:
     """
     fastp -i ${r1} -I ${r2} \
-          -o trimmed_${sample_id}_R1.fastq.gz \
-          -O trimmed_${sample_id}_R2.fastq.gz \
-          --detect_adapter_for_pe \
-          --html ${sample_id}_fastp.html \
-          --json ${sample_id}_fastp.json
+      -o trimmed_${sample_id}_R1.fastq.gz \
+      -O trimmed_${sample_id}_R2.fastq.gz \
+      --detect_adapter_for_pe \
+      --adapter_sequence auto \
+      --adapter_sequence_r2 auto \
+      --length_required 30 \
+      --cut_front --cut_tail \
+      --cut_window_size 5 \
+      --cut_mean_quality 20 \
+      --html ${sample_id}_fastp.html \
+      --json ${sample_id}_fastp.json
+
     """
 }
 
@@ -255,29 +294,41 @@ process PREPARE_VCF_FILE {
     publishDir "${params.test_data_dir}", mode: 'copy'
 
     input: 
-    path variantsFile
+    path snpsFile
+    path indelsFile
     path denylisted
 
     output:
-    tuple path("${variantsFile.baseName}.filtered.recode.vcf.gz"),
-          path("${variantsFile.baseName}.filtered.recode.vcf.gz.tbi")
+    tuple path("merged.filtered.recode.vcf.gz"),
+          path("merged.filtered.recode.vcf.gz.tbi")
 
     script:  
     """
-    # Filter out regions from the denylist using bcftools
-    bcftools view -T ^${denylisted} ${variantsFile} -Oz -o ${variantsFile.baseName}.filtered.recode.vcf.gz
+    # Filter SNPs file
+    bcftools view -T ^${denylisted} ${snpsFile} -Oz -o ${snpsFile.baseName}.filtered.recode.vcf.gz
+    tabix -p vcf ${snpsFile.baseName}.filtered.recode.vcf.gz
 
-    # Create a tabix index for the filtered VCF
-    tabix -p vcf ${variantsFile.baseName}.filtered.recode.vcf.gz
+    # Filter INDELs file
+    bcftools view -T ^${denylisted} ${indelsFile} -Oz -o ${indelsFile.baseName}.filtered.recode.vcf.gz
+    tabix -p vcf ${indelsFile.baseName}.filtered.recode.vcf.gz
+
+    # Merge the filtered SNPs and INDELs into a single VCF file
+    bcftools merge ${snpsFile.baseName}.filtered.recode.vcf.gz ${indelsFile.baseName}.filtered.recode.vcf.gz \
+        -Oz -o merged.filtered.recode.vcf.gz
+
+    # Create a tabix index for the merged VCF
+    tabix -p vcf merged.filtered.recode.vcf.gz
     """
 }
+
 
 
 
 workflow {
     // Step 1: Download reference files
     def genome = DOWNLOAD_TEST_GENOME()
-    def variants = DOWNLOAD_TEST_VARIANTS()
+    def variants_snp = DOWNLOAD_TEST_VARIANTS_SNP()
+	def variants_indels = DOWNLOAD_TEST_VARIANTS_INDELS()
     def denylist = DOWNLOAD_TEST_DENYLIST()
     def genome_gtf = DOWNLOAD_TEST_GTF()
 
@@ -291,7 +342,7 @@ workflow {
     // Step 4: Load and parse sample metadata
     samples_channel = Channel.fromPath(params.csv_file)
         .splitCsv(header: true)
-        .map { row ->  tuple(row.sample_id, row.forward_read_path, row.reverse_read_path) }
+        .map { row ->  tuple(row.sample_id, row.fastq_1, row.fastq_2) }
 		
     // Step 5: Download raw reads
     //reads_channel = download_reads(samples_channel)
@@ -301,6 +352,8 @@ workflow {
 
     // Step 7: Trim reads with fastp (depends on FastQC)
     trimmed_reads = trim_reads(samples_channel)
+	
+
 
     // Step 8: Create genome index files
     // Fasta index depends on genome download
@@ -309,7 +362,7 @@ workflow {
     genome_dict = create_genome_dict(genome)
     // STAR index depends on genome and GTF downloads
     star_index = create_star_index(genome, genome_gtf)
-	// Prepare VCF file
-    prepared_vcf_ch = PREPARE_VCF_FILE(variants, denylist)
+	// Provide SNP and INDEL files
+	prepared_vcf_ch = PREPARE_VCF_FILE(variants_snp, variants_indels, denylist)
 }
 

@@ -5,44 +5,48 @@ nextflow.enable.dsl=2
 process STAR_ALIGNMENT {
     tag { sample_id }
 
-   container "https://depot.galaxyproject.org/singularity/star%3A2.7.11a--h0033a41_0"
-    publishDir "${params.outdir}/STAR", mode: "copy"
+    container "https://depot.galaxyproject.org/singularity/star%3A2.7.11a--h0033a41_0"
+    publishDir "${params.outdir}/STAR/${sample_id}", mode: "copy"
 
     input:
     tuple val(sample_id), path(trimmed_r1), path(trimmed_r2)
     path star_index_dir
-    
 
     output:
     tuple val(sample_id), path("${sample_id}_Aligned.sortedByCoord.out.bam")
 
     script:
     """
-    # ngs-nf-dev Align reads to genome
-  STAR --genomeDir $star_index_dir \
-       --readFilesIn ${trimmed_r1} ${trimmed_r2}  \
-       --runThreadN $task.cpus \
-       --readFilesCommand zcat \
-       --outFilterType BySJout \
-       --alignSJoverhangMin 8 \
-       --alignSJDBoverhangMin 1 \
-       --outFilterMismatchNmax 999
+    # First Pass
+    STAR --genomeDir $star_index_dir \
+         --readFilesIn ${trimmed_r1} ${trimmed_r2} \
+         --runThreadN $task.cpus \
+         --readFilesCommand zcat \
+         --outFilterType BySJout \
+         --alignSJoverhangMin 8 \
+         --alignSJDBoverhangMin 1 \
+         --outFilterMismatchNmax 999 \
+         --outSAMattributes NH HI AS nM MD NM \
+         --outFileNamePrefix ${sample_id}_pass1_
 
-  # Run 2-pass mapping (improve alignmets using table of splice junctions and create a new index)  
-  STAR --genomeDir $star_index_dir \
-       --readFilesIn ${trimmed_r1} ${trimmed_r2} \
-       --runThreadN $task.cpus \
-       --readFilesCommand zcat \
-       --outFilterType BySJout \
-       --alignSJoverhangMin 8 \
-       --alignSJDBoverhangMin 1 \
-       --outFilterMismatchNmax 999 \
-       --sjdbFileChrStartEnd SJ.out.tab \
-	   --outFileNamePrefix ${sample_id}_ \
-       --outSAMtype BAM SortedByCoordinate \
-       --outSAMattrRGline ID:$sample_id LB:library PL:illumina PU:machine SM:GM12878
+    # Second Pass
+    STAR --genomeDir $star_index_dir \
+         --readFilesIn ${trimmed_r1} ${trimmed_r2} \
+         --runThreadN $task.cpus \
+         --readFilesCommand zcat \
+         --sjdbFileChrStartEnd ${sample_id}_pass1_SJ.out.tab \
+         --outFilterType BySJout \
+         --alignSJoverhangMin 8 \
+         --alignSJDBoverhangMin 1 \
+         --outFilterMismatchNmax 999 \
+         --outSAMattributes NH HI AS nM MD NM \
+         --outSAMtype BAM SortedByCoordinate \
+         --limitBAMsortRAM 12000000000 \
+         --outSAMattrRGline ID:$sample_id LB:library PL:illumina PU:machine SM:$sample_id \
+         --outFileNamePrefix ${sample_id}_
     """
 }
+
 
 process SAMTOOLS_SORT_INDEX {
     container "https://depot.galaxyproject.org/singularity/samtools%3A1.18--hd87286a_0"
@@ -86,7 +90,7 @@ process SAMTOOLS_FLAGSTAT {
 process GATK_MARK_DUPLICATES {
     tag { sample_id }
 
-    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.4.0.0--py36hdfd78af_0"
     publishDir "${params.outdir}/mark_duplicates", mode: "copy"
 
     input:
@@ -111,7 +115,7 @@ process GATK_MARK_DUPLICATES {
 process SPLIT_NCIGAR_READS {
     tag { sample_id }
 
-    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.4.0.0--py36hdfd78af_0"
     publishDir "${params.outdir}/split_ncigar", mode: "copy"
 
     input:
@@ -128,14 +132,46 @@ process SPLIT_NCIGAR_READS {
         -R ${genome_fasta} \
         -I ${bam} \
         -O ${sample_id}_split.bam \
-        --create-output-bam-index true
+        --create-output-bam-index true  
+	"""
+}
+
+process SAMTOOLS_CALMD {
+    tag { sample_id }
+
+    container "https://depot.galaxyproject.org/singularity/samtools%3A1.18--h50ea8bc_1"
+
+    publishDir "${params.outdir}/calmd", mode: "copy"
+
+    input:
+    tuple val(sample_id), 
+          path(bam), 
+          path(bai) 
+          path(genome_fasta) 
+		  path (index)
+		  
+    output:
+    tuple val(sample_id), 
+          path("${sample_id}_calmd.bam"), 
+          path("${sample_id}_calmd.bam.bai") 
+         
+
+    script:
+    """
+    # Add NM and MD tags using samtools calmd
+    samtools calmd -b ${bam} ${genome_fasta} > ${sample_id}_calmd.bam
+
+    # Index the updated BAM file
+    samtools index ${sample_id}_calmd.bam
+
     """
 }
+
 
 process GATK_RECALIBRATION {
     tag { sample_id }
 
-    container "https://depot.galaxyproject.org-singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.4.0.0--py36hdfd78af_0"
     publishDir "${params.outdir}/recalibrated_bams", mode: "copy"
 
     input:
@@ -154,7 +190,8 @@ process GATK_RECALIBRATION {
         -R ${genome_fasta} \
         -I ${bam} \
         --known-sites ${known_variants} \
-        -O ${sample_id}_recal_data.table
+        -O ${sample_id}_recal_data.table 
+		
 
     # Step 2: ApplyBQSR
     gatk ApplyBQSR \
@@ -162,13 +199,20 @@ process GATK_RECALIBRATION {
         -I ${bam} \
         --bqsr-recal-file ${sample_id}_recal_data.table \
         -O ${sample_id}_recalibrated.bam
+
+	# Step 3: Validation
+	gatk ValidateSamFile \
+		-I ${sample_id}_recalibrated.bam \
+		-MODE SUMMARY 
+
+
     """
 }
 
 process BED_TO_INTERVAL_LIST {
     tag { bed_file.name }
 
-    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.4.0.0--py36hdfd78af_0"
     publishDir "${params.outdir}/intervals", mode: "copy"
 
     input:
@@ -191,7 +235,7 @@ process BED_TO_INTERVAL_LIST {
 process SCATTER_INTERVAL_LIST {
     tag "Scatter interval list"
 
-    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+     container "https://depot.galaxyproject.org/singularity/gatk4%3A4.4.0.0--py36hdfd78af_0"
     publishDir "${params.outdir}/scattered_intervals", mode: 'copy'
 
     input:
@@ -224,11 +268,11 @@ process SCATTER_INTERVAL_LIST {
 process GATK_HAPLOTYPE_CALLER {
     tag { sample_id }
 
-    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
+     container "https://depot.galaxyproject.org/singularity/gatk4%3A4.4.0.0--py36hdfd78af_0"
     publishDir "${params.outdir}/haplotype_caller", mode: "copy"
 
     input:
-    tuple val(sample_id), path(bam), path(bai)
+    tuple val(sample_id), path(bam), path(bai), path(table)
 	path (genome)
 	path (genome_index)
 	path (genome_dict)
@@ -247,7 +291,6 @@ process GATK_HAPLOTYPE_CALLER {
     --standard-min-confidence-threshold-for-calling 5.0 \
     --dont-use-soft-clipped-bases true \
     --min-base-quality-score 10 \
-	--emit-ref-confidence GVCF \
 	--output-mode EMIT_VARIANTS_ONLY \
     --intervals $interval_list
 
@@ -277,6 +320,28 @@ process GATK_MERGE_VCFS {
     """
 }
 
+process BCFTOOLS_STATS {
+    tag "bcftools_stats"
+
+    container "https://depot.galaxyproject.org/singularity/bcftools%3A1.21--h8b25389_0" // Adjust with your container or module if needed
+    publishDir "${params.outdir}/bcftools_stats/beforefilteration", mode: "copy"
+
+    input:
+    path(vcf_file)    // Input VCF file
+    path(vcf_index)   // Input VCF index (.tbi) file
+
+    output:
+    path("stats.txt")     // Output stats file
+
+    script:
+    """
+    # Generate stats
+    bcftools stats ${vcf_file} > stats.txt
+
+    """
+}
+
+
 process GATK_VARIANT_FILTER {
     tag "variant_filter"
 
@@ -303,10 +368,16 @@ process GATK_VARIANT_FILTER {
     --filter-name "LowQual" --filter-expression "QUAL < 30.0" \
     --filter-name "LowQD" --filter-expression "QD < 2.0" \
     --filter-name "HighFS" --filter-expression "FS > 60.0" \
+    --filter-name "LowMQ" --filter-expression "MQ < 40.0" \
+    --filter-name "HighSOR" --filter-expression "SOR > 3.0" \
+    --filter-name "LowReadPosRankSum" --filter-expression "ReadPosRankSum < -8.0" \
+    --filter-name "LowBaseQRankSum" --filter-expression "BaseQRankSum < -2.0" \
     -O final.vcf.gz
 
     """
 }
+
+
 process ANNOTATE_VARIANTS {
     tag "Annotate variants"
     
@@ -366,9 +437,12 @@ workflow {
 	// Split N CIGAR reads
     split_bams = SPLIT_NCIGAR_READS(marked_bams.map { tuple(it[0], it[1], it[2], params.genome, params.fasta_index, params.genome_dict) })
 	
+	//SAMTOOLS CALMD process
+	calmd_ch = SAMTOOLS_CALMD(split_bams , params.genome, params.fasta_index )
+	
 	// Recalibrate and Apply BQSR in one step
     recalibrated_bams = GATK_RECALIBRATION(
-        split_bams.map { tuple(it[0], it[1], it[2], params.genome, params.fasta_index, params.genome_dict, params.filtered_vcf, params.filtered_vcf_index) })
+        calmd_ch.map { tuple(it[0], it[1], it[2], params.genome, params.fasta_index, params.genome_dict, params.filtered_vcf, params.filtered_vcf_index) })
 		
 	// Convert BED to interval list
     interval_list_ch = BED_TO_INTERVAL_LIST(params.denylist, params.genome, params.genome_dict)
@@ -377,18 +451,21 @@ workflow {
     scattered_intervals_ch = SCATTER_INTERVAL_LIST(interval_list_ch, params.genome_dict)
 	
 	//GATK HaplotypeCaller
-	gvcf_output = GATK_HAPLOTYPE_CALLER(recalibrated_bams, params.genome,params.fasta_index,params.genome_dict,  scattered_intervals_ch)
+	gvcf_output = GATK_HAPLOTYPE_CALLER(recalibrated_bams, params.genome,params.fasta_index,params.genome_dict, scattered_intervals_ch)
 	
 
 	// Combine GVCFs
 	merged_vcf = GATK_MERGE_VCFS(params.genome,params.fasta_index, params.genome_dict,gvcf_output)
-
-	//// Variant Filtering
-    filtered_vcf = GATK_VARIANT_FILTER(merged_vcf,params.genome,params.fasta_index, params.genome_dict )
 	
+	//provide stats
+	bcftools_stats_ch = BCFTOOLS_STATS(merged_vcf)
+
+	// Variant Filtering
+    filtered_vcf = GATK_VARIANT_FILTER(merged_vcf,params.genome,params.fasta_index, params.genome_dict )
+		
 	// Pass all required inputs to ANNOTATE_VARIANTS
     annotated_vcf = ANNOTATE_VARIANTS(filtered_vcf, file('./data/test/snpEff/snpEff.jar'),
         file('./data/test/snpEff/snpEff.config'),
-        file('./data/test/snpEff/data') , params.genomedb)   
+        file('./data/test/snpEff/snpEff/data') , params.genomedb)   
 
 }
