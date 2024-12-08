@@ -413,6 +413,92 @@ process ANNOTATE_VARIANTS {
     """
 }
 
+//=================================ARRIBA FUSION DETECTION========================================================
+
+
+ process STAR_ALIGN_FUSION {
+    tag { sample_id }
+
+    container "https://depot.galaxyproject.org/singularity/star%3A2.7.11a--h0033a41_0"
+	publishDir "${params.outdir}/Star_fusion", mode: 'copy'
+    
+	input:
+    tuple val(sample_id), path(trimmed_r1), path(trimmed_r2)
+    path star_index_dir            
+    path gtf                                          
+
+    output:
+    tuple val(sample_id), path('*Log.final.out'), emit: log_final
+    tuple val(sample_id), path('*Log.out'), emit: log_out
+    tuple val(sample_id), path('*Aligned.sortedByCoord.out.bam'), emit: bam_sorted
+    tuple val(sample_id), path('*Chimeric.out.sam'), emit: chimeric_sam
+    tuple val(sample_id), path('*Log.progress.out'), emit: log_progress
+    tuple val(sample_id), path('*SJ.out.tab'), emit: splice_junctions
+
+    
+    script:
+    """
+    STAR --genomeDir $star_index_dir \
+     --readFilesIn ${trimmed_r1} ${trimmed_r2}\
+     --runThreadN 4 \
+     --readFilesCommand zcat \
+     --outFilterType BySJout \
+     --alignSJoverhangMin 8 \
+     --alignSJDBoverhangMin 1 \
+     --outFilterMismatchNmax 999 \
+     --chimSegmentMin 10 \
+     --chimJunctionOverhangMin 15 \
+     --chimOutType WithinBAM SeparateSAMold \
+     --outSAMtype BAM SortedByCoordinate \
+	 --chimScoreDropMax 30 \
+     --chimScoreSeparation 10 \
+     --outSAMattributes NH HI AS nM MD NM \
+     --outFileNamePrefix ${sample_id}_
+	 
+	 """
+
+}
+
+
+
+
+process ARRIBA {
+    tag { sample_id }
+    
+    container "https://depot.galaxyproject.org/singularity/arriba%3A2.4.0--hdbdd923_3"
+    publishDir "${params.outdir}/ARRIBA", mode: 'copy'
+
+    input:
+	
+	tuple val(sample_id),path(log_final)
+	tuple val(sample_id),path(log_out)
+	tuple val(sample_id),path(bam)
+	tuple val(sample_id),path(chimeric_sam)
+	tuple val(sample_id), path(log_progress) 
+    tuple val(sample_id), path(splice_junctions) 
+    path fasta                                     
+    path gtf                                       
+    path blacklist                                 
+    path known_fusions                             
+
+    output:
+    tuple val(sample_id), path("${sample_id}.fusions.tsv")          , emit: fusions
+    tuple val(sample_id), path("${sample_id}.fusions.discarded.tsv"), emit: fusions_discarded
+
+    script:
+    """
+    arriba \
+         -x $bam \
+         -c ${sample_id}_Chimeric.out.sam \
+         -a $fasta \
+         -g $gtf \
+         -b $blacklist \
+         -k $known_fusions \
+         -o ${sample_id}.fusions.tsv \
+         -O ${sample_id}.fusions.discarded.tsv
+    """
+}
+
 process MULTIQC_REPORT {
     tag "Generate MultiQC report"
 
@@ -485,7 +571,12 @@ workflow {
     annotated_vcf = ANNOTATE_VARIANTS(filtered_vcf, file('./data/test/snpEff/snpEff.jar'),
         file('./data/test/snpEff/snpEff.config'),
         file('./data/test/snpEff/snpEff/data') , params.genomedb)   
-		
+	//===============Workflow for ARRIBA===============================================================================
+
+	star_align_fusion_ch = STAR_ALIGN_FUSION(trimmed_reads_ch, params.star_index_dir, params.gtf_file )
+	ARRIBA_ch = ARRIBA(star_align_fusion_ch, params.genome, params.gtf_file, params.test_blacklist_fusion, params.test_knownfusion)
+	
+	
 	//multiqc
 	multiqc_results = MULTIQC_REPORT(Channel.fromPath("${params.outdir}"))
 

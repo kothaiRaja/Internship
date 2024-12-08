@@ -157,6 +157,33 @@ process DOWNLOAD_SNPEFF_DB {
     """
 }
 
+process DOWNLOAD_ARRIBA {
+    container null
+	publishDir "${params.test_data_dir}/ARRIBA", mode: 'copy' 
+    
+	output:
+    path 'arriba_v2.4.0', emit: 'arriba_dir'
+
+    script:
+    """
+    # Define the Arriba download URL and target directory
+    URL="https://github.com/suhrig/arriba/releases/download/v2.4.0/arriba_v2.4.0.tar.gz"
+    TARGET_DIR="arriba_v2.4.0"
+
+    # Download Arriba tarball
+    wget -O arriba.tar.gz \$URL
+
+    # Create the target directory and extract the tarball
+    mkdir -p \$TARGET_DIR
+    tar -xzvf arriba.tar.gz -C \$TARGET_DIR --strip-components=1
+
+    # Clean up the downloaded tarball
+    rm arriba.tar.gz
+
+    # Output the extracted directory
+    echo "Arriba tool extracted to: \$TARGET_DIR"
+    """
+}
 
 
 
@@ -338,6 +365,9 @@ workflow {
     // Step 3: Download and configure SnpEff
     def snpeff_jar_and_config = DOWNLOAD_SNPEFF_TOOL()
     def snpeff_db = DOWNLOAD_SNPEFF_DB(params.genomedb, snpeff_jar_and_config[0])
+	
+	//Step 4: Download Arriba Tool
+	 Arriba_Toolsetup = DOWNLOAD_ARRIBA()
 
     // Step 4: Load and parse sample metadata
     samples_channel = Channel.fromPath(params.csv_file)
