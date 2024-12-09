@@ -17,33 +17,39 @@ process STAR_ALIGNMENT {
 
     script:
     """
-    # First Pass
     STAR --genomeDir $star_index_dir \
-         --readFilesIn ${trimmed_r1} ${trimmed_r2} \
-         --runThreadN $task.cpus \
-         --readFilesCommand zcat \
-         --outFilterType BySJout \
-         --alignSJoverhangMin 8 \
-         --alignSJDBoverhangMin 1 \
-         --outFilterMismatchNmax 999 \
-         --outSAMattributes NH HI AS nM MD NM \
-         --outFileNamePrefix ${sample_id}_pass1_
+     --readFilesIn ${trimmed_r1} ${trimmed_r2} \
+     --runThreadN $task.cpus \
+     --readFilesCommand zcat \
+     --outFilterType BySJout \
+     --alignSJoverhangMin 5 \
+     --alignSJDBoverhangMin 1 \
+     --outFilterMismatchNmax 999 \
+     --outFilterMatchNmin 16 \
+     --outFilterMatchNminOverLread 0.3 \
+     --outFilterScoreMinOverLread 0.3 \
+     --outSAMattributes NH HI AS nM MD NM \
+     --outFileNamePrefix ${sample_id}_pass1_
 
-    # Second Pass
     STAR --genomeDir $star_index_dir \
-         --readFilesIn ${trimmed_r1} ${trimmed_r2} \
-         --runThreadN $task.cpus \
-         --readFilesCommand zcat \
-         --sjdbFileChrStartEnd ${sample_id}_pass1_SJ.out.tab \
-         --outFilterType BySJout \
-         --alignSJoverhangMin 8 \
-         --alignSJDBoverhangMin 1 \
-         --outFilterMismatchNmax 999 \
-         --outSAMattributes NH HI AS nM MD NM \
-         --outSAMtype BAM SortedByCoordinate \
-         --limitBAMsortRAM 12000000000 \
-         --outSAMattrRGline ID:$sample_id LB:library PL:illumina PU:machine SM:$sample_id \
-         --outFileNamePrefix ${sample_id}_
+     --readFilesIn ${trimmed_r1} ${trimmed_r2} \
+     --runThreadN $task.cpus \
+     --readFilesCommand zcat \
+     --sjdbFileChrStartEnd ${sample_id}_pass1_SJ.out.tab \
+     --outFilterType BySJout \
+     --alignSJoverhangMin 5 \
+     --alignSJDBoverhangMin 1 \
+     --outFilterMismatchNmax 999 \
+     --outFilterMatchNmin 16 \
+     --outFilterMatchNminOverLread 0.3 \
+     --outFilterScoreMinOverLread 0.3 \
+     --outSAMtype BAM SortedByCoordinate \
+     --limitBAMsortRAM 16000000000 \
+     --outSAMattrRGline ID:$sample_id LB:library PL:illumina PU:machine SM:$sample_id \
+     --outSAMunmapped Within \
+     --outSAMattributes NH HI AS nM MD NM \
+     --outFileNamePrefix ${sample_id}_
+
     """
 }
 
@@ -67,6 +73,29 @@ process SAMTOOLS_SORT_INDEX {
     samtools index ${sample_id}_sorted.bam
     """
 }
+
+process SAMTOOLS_FILTER_ORPHANS {
+    tag { sample_id }
+
+    container "https://depot.galaxyproject.org/singularity/samtools%3A1.18--hd87286a_0"
+    publishDir "${params.outdir}/filtered_bam", mode: "copy"
+
+    input:
+    tuple val(sample_id), path(sorted_bam), path(bai)
+
+    output:
+    tuple val(sample_id), path("${sample_id}_filtered.bam"), path("${sample_id}_filtered.bam.bai")
+
+    script:
+    """
+    # Filter out orphan reads (retain properly paired reads)
+    samtools view -h -f 2 ${sorted_bam} | samtools view -b - > ${sample_id}_filtered.bam
+
+    # Index the filtered BAM file
+    samtools index ${sample_id}_filtered.bam
+    """
+}
+
 
 
 process SAMTOOLS_FLAGSTAT {
@@ -401,6 +430,8 @@ process ANNOTATE_VARIANTS {
 	path "annotated.summary.html"
 
     script:
+	
+    
     """
     java -Xmx16G -jar ${snpEffJar} \
         -c ${snpEffConfig} \
@@ -443,21 +474,26 @@ process ANNOTATE_VARIANTS {
     script:
     """
     STAR --genomeDir $star_index_dir \
-     --readFilesIn ${trimmed_r1} ${trimmed_r2}\
+     --readFilesIn ${trimmed_r1} ${trimmed_r2} \
      --runThreadN 4 \
      --readFilesCommand zcat \
      --outFilterType BySJout \
      --alignSJoverhangMin 8 \
      --alignSJDBoverhangMin 1 \
      --outFilterMismatchNmax 999 \
-     --chimSegmentMin 10 \
-     --chimJunctionOverhangMin 15 \
+     --outFilterMatchNmin 16 \
+     --outFilterMatchNminOverLread 0.3 \
+     --outFilterScoreMinOverLread 0.3 \
+     --chimSegmentMin 8 \
+     --chimJunctionOverhangMin 12 \
      --chimOutType WithinBAM SeparateSAMold \
-     --outSAMtype BAM SortedByCoordinate \
-	 --chimScoreDropMax 30 \
+     --chimScoreDropMax 50 \
      --chimScoreSeparation 10 \
+     --outSAMtype BAM SortedByCoordinate \
+     --outSAMunmapped Within \
      --outSAMattributes NH HI AS nM MD NM \
      --outFileNamePrefix ${sample_id}_
+
 	 
 	 """
 
@@ -536,11 +572,14 @@ workflow {
 	// Sort and index BAM files
     sorted_bams = SAMTOOLS_SORT_INDEX(aligned_bams)
 	
+	//Filter BAMS and index BAM files
+	filtered_bams = SAMTOOLS_FILTER_ORPHANS(sorted_bams)
+	
 	// Generate alignment statistics
-    alignment_stats = SAMTOOLS_FLAGSTAT(sorted_bams)
+    alignment_stats = SAMTOOLS_FLAGSTAT(filtered_bams)
 	
 	// Mark duplicates
-    marked_bams = GATK_MARK_DUPLICATES(sorted_bams)
+    marked_bams = GATK_MARK_DUPLICATES(filtered_bams)
 	
 	// Split N CIGAR reads
     split_bams = SPLIT_NCIGAR_READS(marked_bams.map { tuple(it[0], it[1], it[2], params.genome, params.fasta_index, params.genome_dict) })
@@ -570,11 +609,15 @@ workflow {
 
 	// Variant Filtering
     filtered_vcf = GATK_VARIANT_FILTER(merged_vcf,params.genome,params.fasta_index, params.genome_dict )
+	
+	// Dynamically set paths based on the mode (test or actual)
+    def snpEffJar = file(params.mode == 'test' ? './data/test/snpEff/snpEff.jar' : './data/actual/snpEff/snpEff.jar')
+    def snpEffConfig = file(params.mode == 'test' ? './data/test/snpEff/snpEff.config' : './data/actual/snpEff/snpEff.config')
+    def snpEffDbDir = file(params.mode == 'test' ? './data/test/snpEff/snpEff/data' : './data/actual/snpEff/data')
+
 		
 	// Pass all required inputs to ANNOTATE_VARIANTS
-    annotated_vcf = ANNOTATE_VARIANTS(filtered_vcf, file('./data/test/snpEff/snpEff.jar'),
-        file('./data/test/snpEff/snpEff.config'),
-        file('./data/test/snpEff/snpEff/data') , params.genomedb)   
+    annotated_vcf = ANNOTATE_VARIANTS(filtered_vcf, snpEffJar, snpEffConfig, snpEffDbDir, params.genomedb)
 	//===============Workflow for ARRIBA===============================================================================
 
 	star_align_fusion_ch = STAR_ALIGN_FUSION(trimmed_reads_ch, params.star_index_dir, params.gtf_file )

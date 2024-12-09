@@ -248,12 +248,14 @@ process trim_reads {
       --detect_adapter_for_pe \
       --adapter_sequence auto \
       --adapter_sequence_r2 auto \
-      --length_required 30 \
+      --length_required 10 \
       --cut_front --cut_tail \
-      --cut_window_size 5 \
-      --cut_mean_quality 20 \
+      --cut_window_size 10 \
+      --cut_mean_quality 10 \
       --html ${sample_id}_fastp.html \
       --json ${sample_id}_fastp.json
+
+
 
     """
 }
