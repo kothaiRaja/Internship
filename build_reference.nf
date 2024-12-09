@@ -124,6 +124,7 @@ process DOWNLOAD_SNPEFF_TOOL {
     wget -q -O snpEff_latest_core.zip https://snpeff.blob.core.windows.net/versions/snpEff_latest_core.zip
     unzip -j snpEff_latest_core.zip -d ${params.snpeff_jar_dir}
     rm snpEff_latest_core.zip
+	
     """
 }
 
@@ -345,6 +346,17 @@ process PREPARE_VCF_FILE {
 
     # Create a tabix index for the merged VCF
     tabix -p vcf merged.filtered.recode.vcf.gz
+	
+	# Check and fix contig prefixes in the merged VCF file
+    if zcat merged.filtered.recode.vcf.gz | grep -q "^##contig=<ID=chr"; then
+        echo "Renaming contig prefixes..."
+        zcat merged.filtered.recode.vcf.gz | sed 's/^##contig=<ID=chr/##contig=<ID=/' | bgzip > fixed_merged.filtered.recode.vcf.gz
+        tabix -p vcf fixed_merged.filtered.recode.vcf.gz
+        mv fixed_merged.filtered.recode.vcf.gz merged.filtered.recode.vcf.gz
+        mv fixed_merged.filtered.recode.vcf.gz.tbi merged.filtered.recode.vcf.gz.tbi
+    else
+        echo "Contig prefixes are already correct."
+    fi
     """
 }
 

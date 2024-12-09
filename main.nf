@@ -68,6 +68,7 @@ process SAMTOOLS_SORT_INDEX {
     """
 }
 
+
 process SAMTOOLS_FLAGSTAT {
     tag { sample_id }
 
@@ -108,7 +109,10 @@ process GATK_MARK_DUPLICATES {
         -I ${sorted_bam} \
         -O ${sample_id}_marked_duplicates.bam \
         -M ${sample_id}_dup_metrics.txt \
-        --CREATE_INDEX true
+        --CREATE_INDEX true \
+		--REMOVE_DUPLICATES false \
+		--VALIDATION_STRINGENCY LENIENT
+
     """
 }
 
