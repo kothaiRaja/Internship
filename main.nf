@@ -330,38 +330,46 @@ process GATK_HAPLOTYPE_CALLER {
     """
 }
 
-process GATK_MERGE_VCFS {
-    tag "Combine GVCFs"
-    container "https://depot.galaxyproject.org/singularity/gatk4%3A4.2.6.0--hdfd78af_0"
-    publishDir "${params.outdir}/combined_gvcf", mode: 'copy'
-
+process BCFTOOLS_MERGE {
+	container "https://depot.galaxyproject.org/singularity/bcftools%3A1.19--h8b25389_1"
+	publishDir "${params.outdir}/BCFTOOLS_MERGE", mode: "copy"
+	
     input:
-    path genome
-	path genome_index
-	path genome_dict
-    tuple val(sample_id), path (vcfs), path(vcf_index)  // List of GVCFs
+    path vcfs
 
     output:
-    path "merged_output.vcf.gz", emit: vcf          // Merged VCF file
-    path "merged_output.vcf.gz.tbi", emit: vcf_idx  // Index for the merged VCF file
+    path "merged_output.vcf.gz"
+    path "merged_output.vcf.gz.tbi"
+	path "variants_per_sample.tsv" 
+
 
     script:
     """
-    gatk MergeVcfs \
-        ${vcfs.collect { "-I $it" }.join(' ')} \
-        --OUTPUT merged_output.vcf.gz
+    vcfs_absolute=\$(for vcf in ${vcfs.join(' ')}; do realpath "\$vcf"; done)
+
+    echo "Using absolute paths:" > debug_absolute_paths.log
+    echo \$vcfs_absolute >> debug_absolute_paths.log
+
+    bcftools merge \\
+        \$vcfs_absolute \\
+        -O z -o merged_output.vcf.gz
+    tabix -p vcf merged_output.vcf.gz
+	
+	# Query merged VCF to generate a tabular summary
+    bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t[%GT\\t]\\n' merged_output.vcf.gz > variants_per_sample.tsv
     """
 }
 
 process BCFTOOLS_STATS {
     tag "bcftools_stats"
 
-    container "https://depot.galaxyproject.org/singularity/bcftools%3A1.21--h8b25389_0" // Adjust with your container or module if needed
+    container "https://depot.galaxyproject.org/singularity/bcftools%3A1.21--h8b25389_0" 
     publishDir "${params.outdir}/bcftools_stats/beforefilteration", mode: "copy"
 
     input:
     path(vcf_file)    // Input VCF file
     path(vcf_index)   // Input VCF index (.tbi) file
+	path(tsv_file)
 
     output:
     path("stats.txt")     // Output stats file
@@ -384,6 +392,7 @@ process GATK_VARIANT_FILTER {
     input:
     path(vcf_file)
 	path(vcf_index)  // Input VCF and index
+	path(tsv_file)
     path genome 	// Reference genome
 	path genome_index
 	path genome_dict
@@ -598,17 +607,21 @@ workflow {
     scattered_intervals_ch = SCATTER_INTERVAL_LIST(interval_list_ch, params.genome_dict)
 	
 	//GATK HaplotypeCaller
-	gvcf_output = GATK_HAPLOTYPE_CALLER(recalibrated_bams, params.genome,params.fasta_index,params.genome_dict, scattered_intervals_ch)
+	gvcf_output = GATK_HAPLOTYPE_CALLER(recalibrated_bams, params.genome, params.fasta_index, params.genome_dict, scattered_intervals_ch)
+				  .map { it[1] } 
+				  .collect()
 	
+	gvcf_output.view { "Raw GVCF output: $it" }
 
-	// Combine GVCFs
-	merged_vcf = GATK_MERGE_VCFS(params.genome,params.fasta_index, params.genome_dict,gvcf_output)
-	
+
+    // Merge VCF files
+        merged_vcf_ch = BCFTOOLS_MERGE(gvcf_output)
+
 	//provide stats
-	bcftools_stats_ch = BCFTOOLS_STATS(merged_vcf)
+	bcftools_stats_ch = BCFTOOLS_STATS(merged_vcf_ch)
 
 	// Variant Filtering
-    filtered_vcf = GATK_VARIANT_FILTER(merged_vcf,params.genome,params.fasta_index, params.genome_dict )
+    filtered_vcf = GATK_VARIANT_FILTER(merged_vcf_ch, params.genome, params.fasta_index, params.genome_dict )
 	
 	// Dynamically set paths based on the mode (test or actual)
     def snpEffJar = file(params.mode == 'test' ? './data/test/snpEff/snpEff.jar' : './data/actual/snpEff/snpEff.jar')
